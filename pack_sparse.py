@@ -38,7 +38,7 @@ import sys
 import time
 import os
 import struct
-import utils
+import utils_sparse
 import shutil
 
 tmpDir = 'tmp'
@@ -63,16 +63,16 @@ config.read(configFile)
 main = config['Main'];
 firmwareFileName = main['FirmwareFileName']
 projectFolder = main['ProjectFolder']
-useHexValuesPrefix = utils.str2bool(main['useHexValuesPrefix'])
+useHexValuesPrefix = utils_sparse.str2bool(main['useHexValuesPrefix'])
 
 SCRIPT_FIRMWARE_FILE_NAME = main['SCRIPT_FIRMWARE_FILE_NAME']
 DRAM_BUF_ADDR = main['DRAM_BUF_ADDR']
 MAGIC_FOOTER = main['MAGIC_FOOTER']
-HEADER_SIZE = utils.sizeInt(main['HEADER_SIZE'])
+HEADER_SIZE = utils_sparse.sizeInt(main['HEADER_SIZE'])
 
 # XGIMI uses HEADER+BIN+MAGIC+HEADER_CRC to calculate crc2
 if 'USE_XGIMI_CRC2' in main:
-	USE_XGIMI_CRC2 = utils.str2bool(main['USE_XGIMI_CRC2'])
+	USE_XGIMI_CRC2 = utils_sparse.str2bool(main['USE_XGIMI_CRC2'])
 else:
 	USE_XGIMI_CRC2 = False
 
@@ -97,7 +97,7 @@ print ("[i] HEADER_SIZE: {}".format(HEADER_SIZE))
 
 # Create working directory
 print ('[i] Create working directory ...')
-utils.createDirectory(tmpDir)
+utils_sparse.createDirectory(tmpDir)
 
 print ('[i] Generating header and bin ...')
 # Initial empty bin to store merged parts
@@ -112,7 +112,7 @@ with open(headerPart, 'wb') as header:
 	header.write('#\n\n'.encode())
 
 	# Directive tool
-	directive = utils.directive(header, DRAM_BUF_ADDR, useHexValuesPrefix)
+	directive = utils_sparse.directive(header, DRAM_BUF_ADDR, useHexValuesPrefix)
 
 	header.write('# Header prefix'.encode())
 	header.write(headerScriptPrefix.encode())
@@ -123,15 +123,16 @@ with open(headerPart, 'wb') as header:
 
 		part = config[sectionName]
 		name = sectionName.replace('part/', '')
-		create = utils.str2bool(utils.getConfigValue(part, 'create', ''))
-		size = utils.getConfigValue(part, 'size', 'NOT_SET')
-		erase = utils.str2bool(utils.getConfigValue(part, 'erase', ''))
-		type = utils.getConfigValue(part, 'type', 'NOT_SET')
-		imageFile = utils.getConfigValue(part, 'imageFile', 'NOT_SET')
-		chunkSize = utils.sizeInt(utils.getConfigValue(part, 'chunkSize', '0'))
-		lzo = utils.str2bool(utils.getConfigValue(part, 'lzo', ''))
-		memoryOffset = utils.getConfigValue(part, 'memoryOffset', 'NOT_SET')
-		emptySkip = utils.str2bool(utils.getConfigValue(part, 'emptySkip', 'True'))
+		create = utils_sparse.str2bool(utils_sparse.getConfigValue(part, 'create', ''))
+		size = utils_sparse.getConfigValue(part, 'size', 'NOT_SET')
+		erase = utils_sparse.str2bool(utils_sparse.getConfigValue(part, 'erase', ''))
+		type = utils_sparse.getConfigValue(part, 'type', 'NOT_SET')
+		imageFile = utils_sparse.getConfigValue(part, 'imageFile', 'NOT_SET')
+		chunkSize = utils_sparse.sizeInt(utils_sparse.getConfigValue(part, 'chunkSize', '0'))
+		lzo = utils_sparse.str2bool(utils_sparse.getConfigValue(part, 'lzo', ''))
+		memoryOffset = utils_sparse.getConfigValue(part, 'memoryOffset', 'NOT_SET')
+		emptySkip = utils_sparse.str2bool(utils_sparse.getConfigValue(part, 'emptySkip', 'True'))
+		sparse = utils_sparse.str2bool(utils_sparse.getConfigValue(part, 'sparse', ''))
 
 		print("\n")
 		print("[i] Processing partition")
@@ -142,10 +143,15 @@ with open(headerPart, 'wb') as header:
 		print("[i]      Type: {}".format(type))
 		print("[i]      Image: {}".format(imageFile))
 		print("[i]      LZO: {}".format(lzo))
+		print("[i]      SPARSE: {}".format(sparse))
 		print("[i]      Memory Offset: {}".format(memoryOffset))
 		print("[i]      Empty Skip: {}".format(emptySkip))
+		
+		if (lzo & sparse):
+			print ('[!] CONFIG ERROR: you cannot use both LZO and SPARSE for one partition')
+			quit()
 
-		emptySkip = utils.bool2int(emptySkip) # 0 - False, 1 - True
+		emptySkip = utils_sparse.bool2int(emptySkip) # 0 - False, 1 - True
 
 		header.write('\n'.encode())
 		header.write('# {}\n'.format(name).encode())
@@ -157,13 +163,21 @@ with open(headerPart, 'wb') as header:
 			directive.erase_p(name)
 
 		if (type == 'partitionImage'):
+		
+			if sparse:
+				print ('[i]      Converting img to sparse ...')
+				sparseFile = os.path.join(tmpDir, name + '.sparse')
+				utils_sparse.img_to_sparse(imageFile, sparseFile)
 			
-			if (chunkSize > 0):
-				print ('[i] Splitting ...')
-				chunks = utils.splitFile(imageFile, tmpDir, chunksize = chunkSize)
+				print ('[i]      Splitting sparse file...')
+				chunks = utils_sparse.sparse_split(sparseFile, tmpDir, chunkSize)
 			else:
-				# It will contain whole image as a single chunk
-				chunks = utils.splitFile(imageFile, tmpDir, chunksize = 0)
+				if (chunkSize > 0):
+					print ('[i]      Splitting ...')
+					chunks = utils_sparse.splitFile(imageFile, tmpDir, chunksize = chunkSize)
+				else:
+					# It will contain whole image as a single chunk
+					chunks = utils_sparse.splitFile(imageFile, tmpDir, chunksize = 0)
 
 			for index, inputChunk in enumerate(chunks):
 				print ('[i] Processing chunk: {}'.format(inputChunk))
@@ -171,7 +185,7 @@ with open(headerPart, 'wb') as header:
 				if lzo:
 					outputChunk = name1 + '.lzo'
 					print ('[i]     LZO: {} -> {}'.format(inputChunk, outputChunk))
-					utils.lzo(inputChunk, outputChunk)
+					utils_sparse.lzo(inputChunk, outputChunk)
 				else:
 					outputChunk = inputChunk
 
@@ -184,16 +198,18 @@ with open(headerPart, 'wb') as header:
 					directive.erase_p(name) 
 
 				print ('[i]     Align chunk')
-				utils.alignFile(outputChunk)
+				utils_sparse.alignFile(outputChunk)
 
 				print ('[i]     Append: {} -> {}'.format(outputChunk, binPart))
-				utils.appendFile(outputChunk, binPart)
+				utils_sparse.appendFile(outputChunk, binPart)
 
 				if lzo:
 					if index == 0:
 						directive.unlzo(name, size, DRAM_BUF_ADDR, emptySkip)
 					else:
 						directive.unlzo_cont(name, size, DRAM_BUF_ADDR, emptySkip)
+				elif sparse:
+					directive.sparse_write (name, DRAM_BUF_ADDR)
 				else:
 					if len(chunks) == 1:
 						directive.write_p(name, size, DRAM_BUF_ADDR, emptySkip)
@@ -209,7 +225,7 @@ with open(headerPart, 'wb') as header:
 
 		if (type == 'secureInfo'):
 
-			chunks = utils.splitFile(imageFile, tmpDir, chunksize = 0)
+			chunks = utils_sparse.splitFile(imageFile, tmpDir, chunksize = 0)
 			outputChunk = chunks[0]
 
 			size = "{:02X}".format(os.path.getsize(outputChunk))
@@ -217,15 +233,15 @@ with open(headerPart, 'wb') as header:
 			directive.filepartload(SCRIPT_FIRMWARE_FILE_NAME, offset, size)
 
 			print ('[i]     Align')
-			utils.alignFile(outputChunk)
+			utils_sparse.alignFile(outputChunk)
 
 			print ('[i]     Append: {} -> {}'.format(outputChunk, binPart))
-			utils.appendFile(outputChunk, binPart)
+			utils_sparse.appendFile(outputChunk, binPart)
 			directive.store_secure_info(name)
 
 		if (type == 'nuttxConfig'):
 
-			chunks = utils.splitFile(imageFile, tmpDir, chunksize = 0)
+			chunks = utils_sparse.splitFile(imageFile, tmpDir, chunksize = 0)
 			outputChunk = chunks[0]
 
 			size = "{:02X}".format(os.path.getsize(outputChunk))
@@ -233,15 +249,15 @@ with open(headerPart, 'wb') as header:
 			directive.filepartload(SCRIPT_FIRMWARE_FILE_NAME, offset, size)
 
 			print ('[i]     Align')
-			utils.alignFile(outputChunk)
+			utils_sparse.alignFile(outputChunk)
 
 			print ('[i]     Append: {} -> {}'.format(outputChunk, binPart))
-			utils.appendFile(outputChunk, binPart)
+			utils_sparse.appendFile(outputChunk, binPart)
 			directive.store_nuttx_config(name)
 
 		if (type == 'sboot'):
 
-			chunks = utils.splitFile(imageFile, tmpDir, chunksize = 0)
+			chunks = utils_sparse.splitFile(imageFile, tmpDir, chunksize = 0)
 			outputChunk = chunks[0]
 
 			size = "{:02X}".format(os.path.getsize(outputChunk))
@@ -249,15 +265,15 @@ with open(headerPart, 'wb') as header:
 			directive.filepartload(SCRIPT_FIRMWARE_FILE_NAME, offset, size)
 
 			print ('[i]     Align')
-			utils.alignFile(outputChunk)
+			utils_sparse.alignFile(outputChunk)
 
 			print ('[i]     Append: {} -> {}'.format(outputChunk, binPart))
-			utils.appendFile(outputChunk, binPart)
+			utils_sparse.appendFile(outputChunk, binPart)
 			directive.write_boot(size, DRAM_BUF_ADDR, emptySkip)
 			
 		if (type == 'inMemory'):
 		
-			chunks = utils.splitFile(imageFile, tmpDir, chunksize = 0)
+			chunks = utils_sparse.splitFile(imageFile, tmpDir, chunksize = 0)
 			outputChunk = chunks[0]
 			
 			size = "{:02X}".format(os.path.getsize(outputChunk))
@@ -265,10 +281,10 @@ with open(headerPart, 'wb') as header:
 			directive.filepartload(SCRIPT_FIRMWARE_FILE_NAME, offset, size, memoryOffset=memoryOffset)
 			
 			print ('[i]     Align')
-			utils.alignFile(outputChunk)
+			utils_sparse.alignFile(outputChunk)
 			
 			print ('[i]     Append: {} -> {}'.format(outputChunk, binPart))
-			utils.appendFile(outputChunk, binPart)
+			utils_sparse.appendFile(outputChunk, binPart)
 		
 		
 			
@@ -287,22 +303,22 @@ print ('[i] Generating footer ...')
 
 if (USE_XGIMI_CRC2):
 	# NB XGIMI uses HEADER+BIN+MAGIC+HEADER_CRC to calculate crc2
-	headerCRC = utils.crc32(headerPart)
-	header16bytes = utils.loadPart(headerPart, 0, 16)
+	headerCRC = utils_sparse.crc32(headerPart)
+	header16bytes = utils_sparse.loadPart(headerPart, 0, 16)
 
 	# Step #1. Merge HEADER+BIN+MAGIC+HEADER_CRC to one file
 	mergedPart = os.path.join(tmpDir, '~merged')
 	open(mergedPart, 'w').close()
-	utils.appendFile(headerPart, mergedPart)
-	utils.appendFile(binPart, mergedPart)
+	utils_sparse.appendFile(headerPart, mergedPart)
+	utils_sparse.appendFile(binPart, mergedPart)
 	with open(mergedPart, 'ab') as part:
-		print ('[i]     Magic: {}'.format(MAGIC_FOOTER))
+		print ('[i]      Magic: {}'.format(MAGIC_FOOTER))
 		part.write(MAGIC_FOOTER.encode())
-		print ('[i]     Header CRC: 0x{:02X}'.format(headerCRC))
+		print ('[i]      Header CRC: 0x{:02X}'.format(headerCRC))
 		part.write(struct.pack('L', headerCRC))
 	
 	# Step #2 Calculate CRC2
-	mergedCRC = utils.crc32(mergedPart)
+	mergedCRC = utils_sparse.crc32(mergedPart)
 	with open(footerPart, 'wb') as footer:
 		print ('[i]     Merged CRC: 0x{:02X}'.format(mergedCRC))
 		footer.write(struct.pack('L', mergedCRC))
@@ -311,12 +327,12 @@ if (USE_XGIMI_CRC2):
 
 	print ('[i] Merging parts ...')
 	open(firmwareFileName, 'w').close()
-	utils.appendFile(mergedPart, firmwareFileName)
-	utils.appendFile(footerPart, firmwareFileName)
+	utils_sparse.appendFile(mergedPart, firmwareFileName)
+	utils_sparse.appendFile(footerPart, firmwareFileName)
 else:
-	headerCRC = utils.crc32(headerPart)
-	binCRC = utils.crc32(binPart)
-	header16bytes = utils.loadPart(headerPart, 0, 16)
+	headerCRC = utils_sparse.crc32(headerPart)
+	binCRC = utils_sparse.crc32(binPart)
+	header16bytes = utils_sparse.loadPart(headerPart, 0, 16)
 	with open(footerPart, 'wb') as footer:
 		print ('[i]     Magic: {}'.format(MAGIC_FOOTER))
 		footer.write(MAGIC_FOOTER.encode())
@@ -329,9 +345,9 @@ else:
 
 	print ('[i] Merging header, bin, footer ...')
 	open(firmwareFileName, 'w').close()
-	utils.appendFile(headerPart, firmwareFileName)
-	utils.appendFile(binPart, firmwareFileName)
-	utils.appendFile(footerPart, firmwareFileName)
+	utils_sparse.appendFile(headerPart, firmwareFileName)
+	utils_sparse.appendFile(binPart, firmwareFileName)
+	utils_sparse.appendFile(footerPart, firmwareFileName)
 
 shutil.rmtree(tmpDir)
 print ('[i] Done')
